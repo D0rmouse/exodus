@@ -1,7 +1,8 @@
 package com.wix.bazel.migrator.transform
 
 import com.wix.bazel.migrator.model
-import com.wix.bazel.migrator.model.Target.TargetDependency
+import com.wix.bazel.migrator.model.CodePurpose.Test
+import com.wix.bazel.migrator.model.Target.{Jvm, TargetDependency}
 import com.wix.bazel.migrator.model.{Package, SourceModule, Target}
 import com.wix.bazel.migrator.transform.GraphSupport._
 import org.jgrapht.alg.GabowStrongConnectivityInspector
@@ -16,7 +17,28 @@ class CodeAnalysisTransformer(dependencyAnalyzer: DependencyAnalyzer) {
     val cyclicGraphAndCodes = buildDirectedGraph(modules)
     val dagAndCodes = cyclicToAcyclic(cyclicGraphAndCodes)
     val packages = dagToBazel(dagAndCodes)
+    filterDuplicateTargets(packages)
     packages
+  }
+
+  private def filterDuplicateTargets(packages: Set[Package]): Unit = {
+    packages.foreach(p => {
+      var toRemove: Set[Target] = Set()
+      val jvmTargets = p.targets.filter(t => t.isInstanceOf[Jvm]).map(t => t.asInstanceOf[Jvm])
+      p.targets.foreach {
+        case jvm: Jvm =>
+          jvmTargets.foreach(t => {
+            if (
+              jvm.name.equals(t.name)
+                && (jvm.codePurpose.equals(t.codePurpose) || t.codePurpose.equals(Test(None)))
+                && jvm.dependencies.size > t.dependencies.size) {
+              toRemove += t
+            }
+          })
+        case _ =>
+      }
+      p.targets --= toRemove
+    })
   }
 
   private def buildDirectedGraph(modules: Set[SourceModule]): GraphAndCodes = {
@@ -65,7 +87,10 @@ class CodeAnalysisTransformer(dependencyAnalyzer: DependencyAnalyzer) {
   }
 
   private def targetDependencies(graph: CodeGraph, keyToCodes: CodesMap, resourceKey: Vertex): mutable.Set[TargetDependency] = {
-    val outgoingResourceKeys = graph.outgoingEdgesOf(resourceKey).asScala
+    var outgoingResourceKeys = graph.outgoingEdgesOf(resourceKey).asScala
+    outgoingResourceKeys = outgoingResourceKeys.filterNot(p => p.target.resourcePackage.equals(p.source.resourcePackage)
+      && p.source.codeDirPath.relativeSourceDirPathFromModuleRoot.equals(p.target.codeDirPath.relativeSourceDirPathFromModuleRoot)
+    )
     val targets = outgoingResourceKeys.map(toTargetDependency(graph, keyToCodes))
     targets
   }
